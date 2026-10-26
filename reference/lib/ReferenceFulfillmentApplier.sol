@@ -470,19 +470,24 @@ contract ReferenceFulfillmentApplier is
                 orderToExecute.receivedItems.length
             ) {
                 // Retrieve relevant item using item index.
-                consideration = orderToExecute.receivedItems[
+                ReceivedItem memory candidate = orderToExecute.receivedItems[
                     potentialCandidate.itemIndex
                 ];
 
+                // Cache the candidate amount so it is only read once per
+                // component when aggregating across orders.
+                uint256 candidateAmount = candidate.amount;
+
                 if (!foundItem) {
                     foundItem = true;
+                    consideration = candidate;
 
                     // Create the received item.
                     receivedItem = ReceivedItem(
                         consideration.itemType,
                         consideration.token,
                         consideration.identifier,
-                        consideration.amount,
+                        candidateAmount,
                         consideration.recipient
                     );
 
@@ -497,22 +502,19 @@ contract ReferenceFulfillmentApplier is
                     }
                 } else {
                     // Update Received Item amount.
-                    receivedItem.amount =
-                        receivedItem.amount +
-                        consideration.amount;
+                    receivedItem.amount = receivedItem.amount + candidateAmount;
 
                     // Ensure the indicated consideration item matches
                     // original item.
                     potentialCandidate
                         .invalidFulfillment = _checkMatchingConsideration(
-                        consideration,
+                        candidate,
                         receivedItem
                     );
                 }
 
                 // Ensure the item has a nonzero amount.
-                potentialCandidate.missingItemAmount =
-                    consideration.amount == 0;
+                potentialCandidate.missingItemAmount = candidateAmount == 0;
                 potentialCandidate.invalidFulfillment =
                     potentialCandidate.invalidFulfillment ||
                     potentialCandidate.missingItemAmount;

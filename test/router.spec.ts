@@ -335,6 +335,92 @@ describe(`SeaportRouter tests (Seaport v${VERSION})`, function () {
       expect(await testERC721.ownerOf(nftId)).to.equal(owner.address);
       expect(await testERC721.ownerOf(nftId2)).to.equal(seller.address);
     });
+    it("Should skip unavailable orders within a single Seaport call", async () => {
+      // Seller mints nfts
+      const nftId = await mintAndApprove721(
+        seller,
+        marketplaceContract.address
+      );
+      const nftId2 = await mintAndApprove721(
+        seller,
+        marketplaceContract.address
+      );
+
+      const consideration = [
+        getItemETH(parseEther("10"), parseEther("10"), seller.address),
+        getItemETH(parseEther("1"), parseEther("1"), zone.address),
+      ];
+
+      const { order, value } = await createOrder(
+        seller,
+        zone,
+        [getTestItem721(nftId)],
+        consideration,
+        0 // FULL_OPEN
+      );
+      const { order: order2, orderComponents: orderComponents2 } =
+        await createOrder(
+          seller,
+          zone,
+          [getTestItem721(nftId2)],
+          consideration,
+          0 // FULL_OPEN
+        );
+
+      // Seller cancels the second order before the buyer's tx lands
+      await marketplaceContract.connect(seller).cancel([orderComponents2]);
+
+      const params = {
+        seaportContracts: [marketplaceContract.address],
+        advancedOrderParams: [
+          {
+            advancedOrders: [order, order2],
+            criteriaResolvers: [],
+            offerFulfillments: [
+              [{ orderIndex: 0, itemIndex: 0 }],
+              [{ orderIndex: 1, itemIndex: 0 }],
+            ],
+            considerationFulfillments: [
+              [
+                { orderIndex: 0, itemIndex: 0 },
+                { orderIndex: 1, itemIndex: 0 },
+              ],
+              [
+                { orderIndex: 0, itemIndex: 1 },
+                { orderIndex: 1, itemIndex: 1 },
+              ],
+            ],
+            etherValue: value.mul(2),
+          },
+        ],
+        fulfillerConduitKey: toKey(0),
+        recipient: owner.address,
+        maximumFulfilled: 100,
+      };
+
+      const buyerBalanceBefore = await provider.getBalance(buyer.address);
+
+      // Execute orders with a fixed gas limit so a non-terminating loop
+      // would surface as an out-of-gas revert.
+      const tx = await router
+        .connect(buyer)
+        .fulfillAvailableAdvancedOrders(params, {
+          value: value.mul(2),
+          gasLimit: 5_000_000,
+        });
+      const receipt = await tx.wait();
+      const gasCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
+
+      // Only the available order is filled
+      expect(await testERC721.ownerOf(nftId)).to.equal(owner.address);
+      expect(await testERC721.ownerOf(nftId2)).to.equal(seller.address);
+
+      // Excess ether for the cancelled order is returned to the buyer
+      expect(await provider.getBalance(router.address)).to.equal(0);
+      expect(await provider.getBalance(buyer.address)).to.equal(
+        buyerBalanceBefore.sub(value).sub(gasCost)
+      );
+    });
     it("Should be able to fulfill orders through multiple Seaport contracts using conduit", async () => {
       // Seller mints nfts
       const nftId = await mintAndApprove721(

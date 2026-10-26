@@ -527,6 +527,201 @@ describe(`SeaportRouter tests (Seaport v${VERSION})`, function () {
         buyerEthBalanceAfter.sub(value.mul(3))
       );
     });
+    it("Should skip unavailable orders within a single Seaport call", async () => {
+      // Seller mints two nfts listed on the same Seaport contract
+      const nftId = await mintAndApprove721(
+        seller,
+        marketplaceContract.address
+      );
+      const nftId2 = await mintAndApprove721(
+        seller,
+        marketplaceContract.address
+      );
+
+      const consideration = [
+        getItemETH(parseEther("10"), parseEther("10"), seller.address),
+        getItemETH(parseEther("1"), parseEther("1"), zone.address),
+      ];
+
+      const { order, value } = await createOrder(
+        seller,
+        zone,
+        [getTestItem721(nftId)],
+        consideration,
+        0 // FULL_OPEN
+      );
+      const { order: order2 } = await createOrder(
+        seller,
+        zone,
+        [getTestItem721(nftId2)],
+        consideration,
+        0 // FULL_OPEN
+      );
+
+      // Fill the first order so it is unavailable in the batch below.
+      await router.connect(buyer).fulfillAvailableAdvancedOrders(
+        {
+          seaportContracts: [marketplaceContract.address],
+          advancedOrderParams: [
+            {
+              advancedOrders: [order],
+              criteriaResolvers: [],
+              offerFulfillments: [[{ orderIndex: 0, itemIndex: 0 }]],
+              considerationFulfillments: [
+                [{ orderIndex: 0, itemIndex: 0 }],
+                [{ orderIndex: 0, itemIndex: 1 }],
+              ],
+              etherValue: value,
+            },
+          ],
+          fulfillerConduitKey: toKey(0),
+          recipient: buyer.address,
+          maximumFulfilled: 100,
+        },
+        { value }
+      );
+
+      const params = {
+        seaportContracts: [marketplaceContract.address],
+        advancedOrderParams: [
+          {
+            advancedOrders: [order, order2],
+            criteriaResolvers: [],
+            offerFulfillments: [
+              [{ orderIndex: 0, itemIndex: 0 }],
+              [{ orderIndex: 1, itemIndex: 0 }],
+            ],
+            considerationFulfillments: [
+              [
+                { orderIndex: 0, itemIndex: 0 },
+                { orderIndex: 1, itemIndex: 0 },
+              ],
+              [
+                { orderIndex: 0, itemIndex: 1 },
+                { orderIndex: 1, itemIndex: 1 },
+              ],
+            ],
+            etherValue: value.mul(2),
+          },
+        ],
+        fulfillerConduitKey: toKey(0),
+        recipient: owner.address,
+        maximumFulfilled: 100,
+      };
+
+      const { availableOrders } = await router
+        .connect(buyer)
+        .callStatic.fulfillAvailableAdvancedOrders(params, {
+          value: value.mul(2),
+          gasLimit: 5_000_000,
+        });
+      expect(availableOrders).to.deep.equal([[false, true]]);
+
+      const buyerEthBalanceBefore = await provider.getBalance(buyer.address);
+
+      const tx = await router
+        .connect(buyer)
+        .fulfillAvailableAdvancedOrders(params, {
+          value: value.mul(2),
+          gasLimit: 5_000_000,
+        });
+      const receipt = await tx.wait();
+      expect(receipt.gasUsed).to.be.lt(5_000_000);
+
+      // The unavailable order is skipped and the available one is filled.
+      expect(await testERC721.ownerOf(nftId)).to.equal(buyer.address);
+      expect(await testERC721.ownerOf(nftId2)).to.equal(owner.address);
+
+      // Only one order's worth of ether was spent; the rest was returned.
+      const gasCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
+      expect(await provider.getBalance(buyer.address)).to.equal(
+        buyerEthBalanceBefore.sub(value).sub(gasCost)
+      );
+    });
+    it("Should respect maximumFulfilled within a single Seaport call", async () => {
+      const nftId = await mintAndApprove721(
+        seller,
+        marketplaceContract.address
+      );
+      const nftId2 = await mintAndApprove721(
+        seller,
+        marketplaceContract.address
+      );
+
+      const consideration = [
+        getItemETH(parseEther("10"), parseEther("10"), seller.address),
+        getItemETH(parseEther("1"), parseEther("1"), zone.address),
+      ];
+
+      const { order, value } = await createOrder(
+        seller,
+        zone,
+        [getTestItem721(nftId)],
+        consideration,
+        0 // FULL_OPEN
+      );
+      const { order: order2 } = await createOrder(
+        seller,
+        zone,
+        [getTestItem721(nftId2)],
+        consideration,
+        0 // FULL_OPEN
+      );
+
+      const params = {
+        seaportContracts: [marketplaceContract.address],
+        advancedOrderParams: [
+          {
+            advancedOrders: [order, order2],
+            criteriaResolvers: [],
+            offerFulfillments: [
+              [{ orderIndex: 0, itemIndex: 0 }],
+              [{ orderIndex: 1, itemIndex: 0 }],
+            ],
+            considerationFulfillments: [
+              [
+                { orderIndex: 0, itemIndex: 0 },
+                { orderIndex: 1, itemIndex: 0 },
+              ],
+              [
+                { orderIndex: 0, itemIndex: 1 },
+                { orderIndex: 1, itemIndex: 1 },
+              ],
+            ],
+            etherValue: value.mul(2),
+          },
+        ],
+        fulfillerConduitKey: toKey(0),
+        recipient: buyer.address,
+        maximumFulfilled: 1,
+      };
+
+      const { availableOrders } = await router
+        .connect(buyer)
+        .callStatic.fulfillAvailableAdvancedOrders(params, {
+          value: value.mul(2),
+          gasLimit: 5_000_000,
+        });
+      expect(availableOrders).to.deep.equal([[true, false]]);
+
+      const buyerEthBalanceBefore = await provider.getBalance(buyer.address);
+
+      const tx = await router
+        .connect(buyer)
+        .fulfillAvailableAdvancedOrders(params, {
+          value: value.mul(2),
+          gasLimit: 5_000_000,
+        });
+      const receipt = await tx.wait();
+
+      expect(await testERC721.ownerOf(nftId)).to.equal(buyer.address);
+      expect(await testERC721.ownerOf(nftId2)).to.equal(seller.address);
+
+      const gasCost = receipt.gasUsed.mul(receipt.effectiveGasPrice);
+      expect(await provider.getBalance(buyer.address)).to.equal(
+        buyerEthBalanceBefore.sub(value).sub(gasCost)
+      );
+    });
     it("Should revert if cannot return excess ether value", async () => {
       // Seller mints nfts
       const nftId = await mintAndApprove721(

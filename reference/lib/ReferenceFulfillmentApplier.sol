@@ -519,9 +519,9 @@ contract ReferenceFulfillmentApplier is
                     potentialCandidate.invalidFulfillment ||
                     potentialCandidate.missingItemAmount;
 
-                // Zero out amount on original consideration item to
-                // indicate it is spent.
-                consideration.amount = 0;
+                // Zero out amount on the current candidate item to indicate
+                // it is spent.
+                candidate.amount = 0;
 
                 // Break if invalid.
                 if (potentialCandidate.invalidFulfillment) {

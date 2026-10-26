@@ -262,6 +262,128 @@ contract FulfillAvailableAdvancedOrder is BaseOrderTest {
         }
     }
 
+    function testFulfillAvailableAdvancedOrdersAggregatedCreatorFeeConsideration()
+        public
+    {
+        test(
+            this
+                .fulfillAvailableAdvancedOrdersAggregatedCreatorFeeConsideration,
+            Context(referenceConsideration, empty, ItemType(0))
+        );
+        test(
+            this
+                .fulfillAvailableAdvancedOrdersAggregatedCreatorFeeConsideration,
+            Context(consideration, empty, ItemType(0))
+        );
+    }
+
+    /**
+     * @dev Sweep of two ERC721 listings from different sellers, each paying a
+     *      creator fee to the same recipient. The creator fee items of both
+     *      orders are aggregated into one consideration fulfillment, so every
+     *      component after the first must also be marked as spent.
+     */
+    function fulfillAvailableAdvancedOrdersAggregatedCreatorFeeConsideration(
+        Context memory context
+    ) external stateless {
+        uint256 price = 10 ether;
+        uint256 creatorFee = (price * 500) / 10_000;
+
+        AdvancedOrder[] memory orders = new AdvancedOrder[](2);
+        orders[0] = _creatorFeeListing(
+            context.consideration,
+            alice,
+            alicePk,
+            101,
+            price - creatorFee,
+            creatorFee
+        );
+        orders[1] = _creatorFeeListing(
+            context.consideration,
+            bob,
+            bobPk,
+            102,
+            price - creatorFee,
+            creatorFee
+        );
+
+        // One offer fulfillment per NFT.
+        offerComponents.push(FulfillmentComponent(0, 0));
+        offerComponentsArray.push(offerComponents);
+        delete offerComponents;
+        offerComponents.push(FulfillmentComponent(1, 0));
+        offerComponentsArray.push(offerComponents);
+        delete offerComponents;
+
+        // Seller proceeds go to different recipients, so are not aggregated.
+        considerationComponents.push(FulfillmentComponent(0, 0));
+        considerationComponentsArray.push(considerationComponents);
+        delete considerationComponents;
+        considerationComponents.push(FulfillmentComponent(1, 0));
+        considerationComponentsArray.push(considerationComponents);
+        delete considerationComponents;
+
+        // Creator fees share a recipient and are aggregated into one transfer.
+        considerationComponents.push(FulfillmentComponent(0, 1));
+        considerationComponents.push(FulfillmentComponent(1, 1));
+        considerationComponentsArray.push(considerationComponents);
+        delete considerationComponents;
+
+        uint256 aliceBalanceBefore = alice.balance;
+        uint256 bobBalanceBefore = bob.balance;
+        uint256 calBalanceBefore = cal.balance;
+
+        (bool[] memory availableOrders, ) = context
+            .consideration
+            .fulfillAvailableAdvancedOrders{ value: price * 2 }(
+            orders,
+            new CriteriaResolver[](0),
+            offerComponentsArray,
+            considerationComponentsArray,
+            bytes32(0),
+            address(0),
+            2
+        );
+
+        assertTrue(availableOrders[0]);
+        assertTrue(availableOrders[1]);
+        assertEq(test721_1.ownerOf(101), address(this));
+        assertEq(test721_1.ownerOf(102), address(this));
+        assertEq(alice.balance - aliceBalanceBefore, price - creatorFee);
+        assertEq(bob.balance - bobBalanceBefore, price - creatorFee);
+        assertEq(cal.balance - calBalanceBefore, creatorFee * 2);
+    }
+
+    function _creatorFeeListing(
+        ConsiderationInterface _consideration,
+        address payable seller,
+        uint256 sellerPk,
+        uint256 tokenId,
+        uint256 sellerProceeds,
+        uint256 creatorFee
+    ) internal returns (AdvancedOrder memory) {
+        delete offerItems;
+        delete considerationItems;
+
+        test721_1.mint(seller, tokenId);
+        addErc721OfferItem(tokenId);
+        addEthConsiderationItem(seller, sellerProceeds);
+        addEthConsiderationItem(cal, creatorFee);
+
+        _configureOrderParameters(seller, address(0), bytes32(0), 0, false);
+        OrderComponents memory orderComponents = getOrderComponents(
+            baseOrderParameters,
+            _consideration.getCounter(seller)
+        );
+        bytes memory signature = signOrder(
+            _consideration,
+            sellerPk,
+            _consideration.getOrderHash(orderComponents)
+        );
+
+        return AdvancedOrder(baseOrderParameters, 1, 1, signature, "");
+    }
+
     function testFulfillSingleOrderViaFulfillAvailableAdvancedOrdersEthToErc1155(
         FuzzInputs memory args
     )
